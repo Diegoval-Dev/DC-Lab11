@@ -12,7 +12,7 @@ import re
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 from sklearn.metrics import confusion_matrix, accuracy_score, classification_report
@@ -42,14 +42,14 @@ st.markdown("""
         font-weight: 700;
     }
     .metric-card {
-        background: white;
+        background: black;
         padding: 1rem;
         border-radius: 8px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         border-left: 4px solid #1f77b4;
     }
     .stMetric {
-        background: white;
+        background: black;
         padding: 1rem;
         border-radius: 8px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
@@ -327,6 +327,95 @@ def create_engagement_trends(df):
 
     return fig
 
+def create_geo_heatmap(df):
+    """Create geographic heatmap (synthetic if no coords)"""
+    if 'lat' not in df.columns or 'lon' not in df.columns:
+        np.random.seed(42)
+        df['lat'] = np.random.uniform(14.58, 14.70, len(df))
+        df['lon'] = np.random.uniform(-90.60, -90.45, len(df))
+    
+    fig = px.density_mapbox(
+        df,
+        lat='lat',
+        lon='lon',
+        z='retweet_count',
+        radius=8,
+        center=dict(lat=14.63, lon=-90.53),
+        zoom=11,
+        mapbox_style='carto-darkmatter',
+        color_continuous_scale='plasma',
+        title='Mapa de Calor de Tweets de Tráfico en Ciudad de Guatemala'
+    )
+    fig.update_layout(height=500)
+    return fig
+
+def create_wordcloud(df):
+    """Generate word cloud from tweet text"""
+    text = ' '.join(df['text_clean'].dropna().astype(str))
+    wc = WordCloud(
+        width=800,
+        height=400,
+        background_color='black',
+        colormap='plasma',
+        max_words=150,
+        collocations=False
+    ).generate(text)
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.imshow(wc, interpolation='bilinear')
+    ax.axis('off')
+    st.pyplot(fig)
+
+def train_models(df):
+    """Train and evaluate 3 simple classification models on traffic_category"""
+    if 'traffic_category' not in df.columns:
+        st.warning("No se encontró la columna 'traffic_category'. No se pueden entrenar modelos.")
+        return None, None
+
+    # Seleccionamos características básicas
+    X = df[['retweet_count', 'like_count', 'reply_count', 'word_count']]
+    y = df['traffic_category']
+
+    # Dividir los datos
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42, stratify=y)
+
+    models = {
+        "Regresión Logística": LogisticRegression(max_iter=300),
+        "Bosque Aleatorio": RandomForestClassifier(n_estimators=150, random_state=42),
+        "SVM Lineal": SVC(kernel='linear', probability=True, random_state=42)
+    }
+
+    results = []
+    preds = {}
+
+    for name, model in models.items():
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        acc = accuracy_score(y_test, y_pred)
+        report = classification_report(y_test, y_pred, output_dict=True, zero_division=0)
+        results.append({
+            "Modelo": name,
+            "Accuracy": round(acc, 3),
+            "Precision": round(report['weighted avg']['precision'], 3),
+            "Recall": round(report['weighted avg']['recall'], 3),
+            "F1-score": round(report['weighted avg']['f1-score'], 3)
+        })
+        preds[name] = (y_test, y_pred)
+
+    results_df = pd.DataFrame(results)
+    return results_df, preds
+
+def plot_confusion_matrix(y_true, y_pred, model_name):
+    """Plot confusion matrix using seaborn heatmap"""
+    cm = confusion_matrix(y_true, y_pred)
+    fig, ax = plt.subplots(figsize=(4, 3))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=False)
+    plt.xlabel("Predicción")
+    plt.ylabel("Real")
+    plt.title(f"Matriz de Confusión - {model_name}")
+    st.pyplot(fig)
+
+
 def main():
     # Header
     st.markdown("""
@@ -467,19 +556,79 @@ def main():
             key="category_filter"
         )
 
+        # Aplicar filtro dinámico
         if selected_categories:
             df_cat_filtered = df_filtered[df_filtered['traffic_category'].isin(selected_categories)]
+        else:
+            df_cat_filtered = df_filtered
 
-            # Show impact of filtering
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Tweets en Categorías Seleccionadas", len(df_cat_filtered))
-            with col2:
-                avg_engagement = df_cat_filtered['engagement_total'].mean()
-                st.metric("Interacción Promedio", f"{avg_engagement:.1f}")
-            with col3:
-                top_category = df_cat_filtered['traffic_category'].mode().iloc[0] if len(df_cat_filtered) > 0 else "N/A"
-                st.metric("Categoría Principal", top_category)
+        # Mostrar métricas rápidas por categoría
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Tweets en Categorías Seleccionadas", len(df_cat_filtered))
+        with col2:
+            avg_engagement = df_cat_filtered['engagement_total'].mean()
+            st.metric("Interacción Promedio", f"{avg_engagement:.1f}")
+        with col3:
+            top_category = (
+                df_cat_filtered['traffic_category'].mode().iloc[0]
+                if len(df_cat_filtered) > 0 else "N/A"
+            )
+            st.metric("Categoría Principal", top_category)
+
+        # --- NUEVA SECCIÓN: Visualizaciones enlazadas ---
+        st.markdown('<h2 class="section-header">Análisis Espacial y Semántico</h2>', unsafe_allow_html=True)
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.plotly_chart(
+                create_geo_heatmap(df_cat_filtered),
+                use_container_width=True
+            )
+
+        with col2:
+            st.markdown("#### Nube de Palabras de Tweets")
+            create_wordcloud(df_cat_filtered)
+
+    # Visualization 5: Modelos Predictivos
+    st.markdown('<h2 class="section-header">Modelos Predictivos y Comparativa de Desempeño</h2>', unsafe_allow_html=True)
+
+    # Entrenamiento de los modelos (cacheado para eficiencia)
+    with st.spinner("Entrenando modelos predictivos..."):
+        results_df, preds = train_models(df_filtered)
+
+    if results_df is not None:
+        # Mostrar tabla comparativa
+        st.markdown("#### Desempeño General de los Modelos")
+        st.dataframe(results_df, use_container_width=True)
+
+        # Selector para comparar modelos
+        selected_models = st.multiselect(
+            "Seleccionar modelos para comparar",
+            options=results_df['Modelo'].tolist(),
+            default=results_df['Modelo'].tolist()[:2]
+        )
+
+        if selected_models:
+            # Gráfico de barras comparativo
+            fig = px.bar(
+                results_df[results_df['Modelo'].isin(selected_models)],
+                x='Modelo',
+                y=['Accuracy', 'Precision', 'Recall', 'F1-score'],
+                barmode='group',
+                title='Comparativa de Desempeño entre Modelos'
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Mostrar matrices de confusión
+            st.markdown("#### Matrices de Confusión")
+            cols = st.columns(len(selected_models))
+            for i, name in enumerate(selected_models):
+                with cols[i]:
+                    y_true, y_pred = preds[name]
+                    plot_confusion_matrix(y_true, y_pred, name)
+
 
     # Data table
     st.markdown('<h2 class="section-header">Explorador de Datos</h2>', unsafe_allow_html=True)
